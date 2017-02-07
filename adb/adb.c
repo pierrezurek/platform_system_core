@@ -55,8 +55,20 @@ int gListenAll = 0;
 static int auth_enabled = 0;
 
 #if !ADB_HOST
+
+#if 0
+# adbd is controlled via property triggers in init.<platform>.usb.rc
+service adbd /sbin/adbd --root_seclabel=u:r:su:s0
+    class core
+    socket adbd stream 660 system system
+    disabled
+    seclabel u:r:adbd:s0
+
+#endif
+
 static const char *adb_device_banner = "device";
-static const char *root_seclabel = NULL;
+//static const char *adb_device_banner = "devzpi";
+static const char *root_seclabel = "u:r:su:s0";
 #endif
 
 void fatal(const char *fmt, ...)
@@ -81,72 +93,6 @@ void fatal_errno(const char *fmt, ...)
     exit(-1);
 }
 
-int   adb_trace_mask;
-
-/* read a comma/space/colum/semi-column separated list of tags
- * from the ADB_TRACE environment variable and build the trace
- * mask from it. note that '1' and 'all' are special cases to
- * enable all tracing
- */
-void  adb_trace_init(void)
-{
-    const char*  p = getenv("ADB_TRACE");
-    const char*  q;
-
-    static const struct {
-        const char*  tag;
-        int           flag;
-    } tags[] = {
-        { "1", 0 },
-        { "all", 0 },
-        { "adb", TRACE_ADB },
-        { "sockets", TRACE_SOCKETS },
-        { "packets", TRACE_PACKETS },
-        { "rwx", TRACE_RWX },
-        { "usb", TRACE_USB },
-        { "sync", TRACE_SYNC },
-        { "sysdeps", TRACE_SYSDEPS },
-        { "transport", TRACE_TRANSPORT },
-        { "jdwp", TRACE_JDWP },
-        { "services", TRACE_SERVICES },
-        { "auth", TRACE_AUTH },
-        { NULL, 0 }
-    };
-
-    if (p == NULL)
-            return;
-
-    /* use a comma/column/semi-colum/space separated list */
-    while (*p) {
-        int  len, tagn;
-
-        q = strpbrk(p, " ,:;");
-        if (q == NULL) {
-            q = p + strlen(p);
-        }
-        len = q - p;
-
-        for (tagn = 0; tags[tagn].tag != NULL; tagn++)
-        {
-            int  taglen = strlen(tags[tagn].tag);
-
-            if (len == taglen && !memcmp(tags[tagn].tag, p, len) )
-            {
-                int  flag = tags[tagn].flag;
-                if (flag == 0) {
-                    adb_trace_mask = ~0;
-                    return;
-                }
-                adb_trace_mask |= (1 << flag);
-                break;
-            }
-        }
-        p = q;
-        if (*p)
-            p++;
-    }
-}
-
 #if !ADB_HOST
 /*
  * Implements ADB tracing inside the emulator.
@@ -169,35 +115,6 @@ void  adb_trace_init(void)
 #define open    ___xxx_open
 #define write   ___xxx_write
 
-/* A handle to adb-debug qemud service in the emulator. */
-int   adb_debug_qemu = -1;
-
-/* Initializes connection with the adb-debug qemud service in the emulator. */
-static int adb_qemu_trace_init(void)
-{
-    char con_name[32];
-
-    if (adb_debug_qemu >= 0) {
-        return 0;
-    }
-
-    /* adb debugging QEMUD service connection request. */
-    snprintf(con_name, sizeof(con_name), "qemud:adb-debug");
-    adb_debug_qemu = qemu_pipe_open(con_name);
-    return (adb_debug_qemu >= 0) ? 0 : -1;
-}
-
-void adb_qemu_trace(const char* fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    char msg[1024];
-
-    if (adb_debug_qemu >= 0) {
-        vsnprintf(msg, sizeof(msg), fmt, args);
-        adb_write(adb_debug_qemu, msg, strlen(msg));
-    }
-}
 #endif  /* !ADB_HOST */
 
 apacket *get_apacket(void)
@@ -215,13 +132,11 @@ void put_apacket(apacket *p)
 
 void handle_online(atransport *t)
 {
-    D("adb: online\n");
     t->online = 1;
 }
 
 void handle_offline(atransport *t)
 {
-    D("adb: offline\n");
     //Close the associated usb
     t->online = 0;
     run_transport_disconnects(t);
@@ -270,7 +185,6 @@ void print_packet(const char *label, apacket *p)
 
 static void send_ready(unsigned local, unsigned remote, atransport *t)
 {
-    D("Calling send_ready \n");
     apacket *p = get_apacket();
     p->msg.command = A_OKAY;
     p->msg.arg0 = local;
@@ -280,7 +194,6 @@ static void send_ready(unsigned local, unsigned remote, atransport *t)
 
 static void send_close(unsigned local, unsigned remote, atransport *t)
 {
-    D("Calling send_close \n");
     apacket *p = get_apacket();
     p->msg.command = A_CLSE;
     p->msg.arg0 = local;
@@ -340,7 +253,6 @@ static void send_msg_with_okay(int fd, const char* msg, size_t msglen) {
 
 static void send_connect(atransport *t)
 {
-    D("Calling send_connect \n");
     apacket *cp = get_apacket();
     cp->msg.command = A_CNXN;
     cp->msg.arg0 = A_VERSION;
@@ -352,13 +264,11 @@ static void send_connect(atransport *t)
 
 void send_auth_request(atransport *t)
 {
-    D("Calling send_auth_request\n");
     apacket *p;
     int ret;
 
     ret = adb_auth_generate_token(t->token, sizeof(t->token));
     if (ret != sizeof(t->token)) {
-        D("Error generating token ret=%d\n", ret);
         return;
     }
 
@@ -372,13 +282,11 @@ void send_auth_request(atransport *t)
 
 static void send_auth_response(uint8_t *token, size_t token_size, atransport *t)
 {
-    D("Calling send_auth_response\n");
     apacket *p = get_apacket();
     int ret;
 
     ret = adb_auth_sign(t->key, token, token_size, p->data);
     if (!ret) {
-        D("Error signing the token\n");
         put_apacket(p);
         return;
     }
@@ -391,13 +299,11 @@ static void send_auth_response(uint8_t *token, size_t token_size, atransport *t)
 
 static void send_auth_publickey(atransport *t)
 {
-    D("Calling send_auth_publickey\n");
     apacket *p = get_apacket();
     int ret;
 
     ret = adb_auth_get_userkey(p->data, sizeof(p->data));
     if (!ret) {
-        D("Failed to get user public key\n");
         put_apacket(p);
         return;
     }
@@ -463,7 +369,6 @@ void parse_banner(char *banner, atransport *t)
     char *cp;
     char *type;
 
-    D("parse_banner: %s\n", banner);
     type = banner;
     cp = strchr(type, ':');
     if (cp) {
@@ -491,28 +396,24 @@ void parse_banner(char *banner, atransport *t)
     }
 
     if(!strcmp(type, "bootloader")){
-        D("setting connection_state to CS_BOOTLOADER\n");
         t->connection_state = CS_BOOTLOADER;
         update_transports();
         return;
     }
 
     if(!strcmp(type, "device")) {
-        D("setting connection_state to CS_DEVICE\n");
         t->connection_state = CS_DEVICE;
         update_transports();
         return;
     }
 
     if(!strcmp(type, "recovery")) {
-        D("setting connection_state to CS_RECOVERY\n");
         t->connection_state = CS_RECOVERY;
         update_transports();
         return;
     }
 
     if(!strcmp(type, "sideload")) {
-        D("setting connection_state to CS_SIDELOAD\n");
         t->connection_state = CS_SIDELOAD;
         update_transports();
         return;
@@ -525,10 +426,6 @@ void handle_packet(apacket *p, atransport *t)
 {
     asocket *s;
 
-    D("handle_packet() %c%c%c%c\n", ((char*) (&(p->msg.command)))[0],
-            ((char*) (&(p->msg.command)))[1],
-            ((char*) (&(p->msg.command)))[2],
-            ((char*) (&(p->msg.command)))[3]);
     print_packet("recv", p);
 
     switch(p->msg.command){
@@ -612,8 +509,6 @@ void handle_packet(apacket *p, atransport *t)
                     /* Other READY messages must use the same local-id */
                     s->ready(s);
                 } else {
-                    D("Invalid A_OKAY(%d,%d), expected A_OKAY(%d,%d) on transport %s\n",
-                      p->msg.arg0, p->msg.arg1, s->peer->id, p->msg.arg1, t->serial);
                 }
             }
         }
@@ -633,8 +528,6 @@ void handle_packet(apacket *p, atransport *t)
                  * socket has a peer on the same transport.
                  */
                 if (p->msg.arg0 == 0 && s->peer && s->peer->transport != t) {
-                    D("Invalid A_CLSE(0, %u) from transport %s, expected transport %s\n",
-                      p->msg.arg1, t->serial, s->peer->transport->serial);
                 } else {
                     s->close(s);
                 }
@@ -649,7 +542,6 @@ void handle_packet(apacket *p, atransport *t)
                 p->len = p->msg.data_length;
 
                 if(s->enqueue(s, p) == 0) {
-                    D("Enqueue the socket\n");
                     send_ready(s->id, rid, t);
                 }
                 return;
@@ -958,36 +850,27 @@ static void adb_cleanup(void)
 
 void start_logging(void)
 {
-#ifdef HAVE_WIN32_PROC
-    char    temp[ MAX_PATH ];
-    FILE*   fnul;
-    FILE*   flog;
+    char buf[1024];
+#if 0
+    char dt[20]; // space enough for DD/MM/YYYY HH:MM:SS and terminator
+    struct tm tm;
+    time_t current_time;
 
-    GetTempPath( sizeof(temp) - 8, temp );
-    strcat( temp, "adb.log" );
+    current_time = time(NULL);
+    tm = *localtime(&current_time); // convert time_t to struct tm
+    strftime(dt, sizeof dt, "%Y-%m-%d_%H%M%S", &tm); // format
 
-    /* Win32 specific redirections */
-    fnul = fopen( "NUL", "rt" );
-    if (fnul != NULL)
-        stdin[0] = fnul[0];
-
-    flog = fopen( temp, "at" );
-    if (flog == NULL)
-        flog = fnul;
-
-    setvbuf( flog, NULL, _IONBF, 0 );
-
-    stdout[0] = flog[0];
-    stderr[0] = flog[0];
-    fprintf(stderr,"--- adb starting (pid %d) ---\n", getpid());
-#else
+    sprintf(buf, "/storage/emulated/legacy/zpilogs/adbd_%s.log", dt);
+#endif
+    sprintf(buf, "/storage/emulated/legacy/zpilogs/adbd.log");
+ 
     int fd;
 
     fd = unix_open("/dev/null", O_RDONLY);
     dup2(fd, 0);
     adb_close(fd);
 
-    fd = unix_open("/tmp/adb.log", O_WRONLY | O_CREAT | O_APPEND, 0640);
+    fd = unix_open(buf, O_WRONLY | O_CREAT | O_APPEND, 0640);
     if(fd < 0) {
         fd = unix_open("/dev/null", O_WRONLY);
     }
@@ -995,10 +878,9 @@ void start_logging(void)
     dup2(fd, 2);
     adb_close(fd);
     fprintf(stderr,"--- adb starting (pid %d) ---\n", getpid());
-#endif
 }
 
-#if !ADB_HOST
+#if 0
 void start_device_log(void)
 {
     int fd;
@@ -1055,12 +937,10 @@ void adb_set_affinity(void)
      fatal("bad number (%s) in env var %s. Expecting 0..n.\n", cpunum_str, AFFINITY_ENVVAR);
 
    sched_getaffinity(0, sizeof(cpu_set), &cpu_set);
-   D("orig cpu_set[0]=0x%08lx\n", cpu_set.__bits[0]);
    CPU_ZERO(&cpu_set);
    CPU_SET(cpu_num, &cpu_set);
    sched_setaffinity(0, sizeof(cpu_set), &cpu_set);
    sched_getaffinity(0, sizeof(cpu_set), &cpu_set);
-   D("new cpu_set[0]=0x%08lx\n", cpu_set.__bits[0]);
 }
 #endif
 
@@ -1260,37 +1140,6 @@ static void drop_capabilities_bounding_set_if_needed() {
     }
 }
 
-static int should_drop_privileges() {
-#ifndef ALLOW_ADBD_ROOT
-    return 1;
-#else /* ALLOW_ADBD_ROOT */
-    int secure = 0;
-    char value[PROPERTY_VALUE_MAX];
-
-   /* run adbd in secure mode if ro.secure is set and
-    ** we are not in the emulator
-    */
-    property_get("ro.kernel.qemu", value, "");
-    if (strcmp(value, "1") != 0) {
-        property_get("ro.secure", value, "1");
-        if (strcmp(value, "1") == 0) {
-            // don't run as root if ro.secure is set...
-            secure = 1;
-
-            // ... except we allow running as root in userdebug builds if the
-            // service.adb.root property has been set by the "adb root" command
-            property_get("ro.debuggable", value, "");
-            if (strcmp(value, "1") == 0) {
-                property_get("service.adb.root", value, "");
-                if (strcmp(value, "1") == 0) {
-                    secure = 0;
-                }
-            }
-        }
-    }
-    return secure;
-#endif /* ALLOW_ADBD_ROOT */
-}
 #endif /* !ADB_HOST */
 
 int adb_main(int is_daemon, int server_port)
@@ -1300,6 +1149,7 @@ int adb_main(int is_daemon, int server_port)
     char value[PROPERTY_VALUE_MAX];
 
     umask(000);
+    start_logging();
 #endif
 
     atexit(adb_cleanup);
@@ -1329,20 +1179,6 @@ int adb_main(int is_daemon, int server_port)
         exit(1);
     }
 #else
-    property_get("ro.adb.secure", value, "0");
-    auth_enabled = !strcmp(value, "1");
-    if (auth_enabled)
-        adb_auth_init();
-
-    // Our external storage path may be different than apps, since
-    // we aren't able to bind mount after dropping root.
-    const char* adb_external_storage = getenv("ADB_EXTERNAL_STORAGE");
-    if (NULL != adb_external_storage) {
-        setenv("EXTERNAL_STORAGE", adb_external_storage, 1);
-    } else {
-        D("Warning: ADB_EXTERNAL_STORAGE is not set.  Leaving EXTERNAL_STORAGE"
-          " unchanged.\n");
-    }
 
     /* add extra groups:
     ** AID_ADB to access the USB driver
@@ -1364,24 +1200,16 @@ int adb_main(int is_daemon, int server_port)
 
     /* don't listen on a port (default 5037) if running in secure mode */
     /* don't run as root if we are running in secure mode */
-    if (should_drop_privileges()) {
-        drop_capabilities_bounding_set_if_needed();
-
-        /* then switch user and group to "shell" */
-        if (setgid(AID_SHELL) != 0) {
-            exit(1);
-        }
-        if (setuid(AID_SHELL) != 0) {
-            exit(1);
-        }
-
-        D("Local port disabled\n");
-    } else {
+    if (true) {
         char local_name[30];
         if ((root_seclabel != NULL) && (is_selinux_enabled() > 0)) {
             // b/12587913: fix setcon to allow const pointers
+            fprintf(stderr, "selinux enabled, calling setcon\n");
             if (setcon((char *)root_seclabel) < 0) {
-                exit(1);
+                fprintf(stderr, "setcon failed\n");
+            }
+            else {
+                fprintf(stderr, "setcon success\n");
             }
         }
         build_local_name(local_name, sizeof(local_name), server_port);
@@ -1413,9 +1241,7 @@ int adb_main(int is_daemon, int server_port)
         local_init(DEFAULT_ADB_LOCAL_TRANSPORT_PORT);
     }
 
-    D("adb_main(): pre init_jdwp()\n");
     init_jdwp();
-    D("adb_main(): post init_jdwp()\n");
 #endif
 
     if (is_daemon)
@@ -1427,9 +1253,7 @@ int adb_main(int is_daemon, int server_port)
 #elif defined(HAVE_FORKEXEC)
         fprintf(stderr, "OK\n");
 #endif
-        start_logging();
     }
-    D("Event loop starting\n");
 
     fdevent_loop();
 
@@ -1601,9 +1425,7 @@ int handle_host_request(char *service, transport_type ttype, char* serial, int r
         int use_long = !strcmp(service+7, "-l");
         if (use_long || service[7] == 0) {
             memset(buffer, 0, sizeof(buffer));
-            D("Getting device list \n");
             list_transports(buffer, sizeof(buffer), use_long);
-            D("Wrote device list \n");
             send_msg_with_okay(reply_fd, buffer, strlen(buffer));
             return 0;
         }
@@ -1689,37 +1511,8 @@ int main(int argc, char **argv)
 {
 #if ADB_HOST
     adb_sysdeps_init();
-    adb_trace_init();
-    D("Handling commandline()\n");
     return adb_commandline(argc - 1, argv + 1);
 #else
-    /* If adbd runs inside the emulator this will enable adb tracing via
-     * adb-debug qemud service in the emulator. */
-    adb_qemu_trace_init();
-    while(1) {
-        int c;
-        int option_index = 0;
-        static struct option opts[] = {
-            {"root_seclabel", required_argument, 0, 's' },
-            {"device_banner", required_argument, 0, 'b' }
-        };
-        c = getopt_long(argc, argv, "", opts, &option_index);
-        if (c == -1)
-            break;
-        switch (c) {
-        case 's':
-            root_seclabel = optarg;
-            break;
-        case 'b':
-            adb_device_banner = optarg;
-            break;
-        default:
-            break;
-        }
-    }
-
-    start_device_log();
-    D("Handling main()\n");
     return adb_main(0, DEFAULT_ADB_PORT);
 #endif
 }

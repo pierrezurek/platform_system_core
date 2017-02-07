@@ -264,9 +264,7 @@ static void local_socket_close_locked(asocket *s)
         ** pending packets, destroy immediately
         */
     if (s->closing || s->pkt_first == NULL) {
-        int   id = s->id;
         local_socket_destroy(s);
-        D("LS(%d): closed\n", id);
         return;
     }
 
